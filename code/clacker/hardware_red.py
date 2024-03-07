@@ -1,0 +1,22 @@
+# Clacker Hardware for the device with the RED Fire button
+STATUS_RED_GP = 9
+STATUS_GRN_GP = 4
+
+BTN1_GP = 13
+LED1_RED_GP = 8
+LED1_GRN_GP = 3
+
+BTN2_GP = 12
+LED2_RED_GP = 7
+LED2_GRN_GP = 2
+
+BTN3_GP = 11
+LED3_RED_GP = 6
+LED3_GRN_GP = 1
+
+BTN4_GP = 10
+LED4_RED_GP = 5
+LED4_GRN_GP = 0
+
+BTN_FIRE_GP = 21
+SW_AB_GP = 22

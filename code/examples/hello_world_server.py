@@ -37,7 +37,7 @@ class MyApp:
 
 
 if __name__ == '__main__':
-    # Main code entrypoint Only executed if this file is run, not imported
+    # Main claymore entrypoint Only executed if this file is run, not imported
     from helpers import wifi_start_access_point, _handle_exception
 
     async def start_server():

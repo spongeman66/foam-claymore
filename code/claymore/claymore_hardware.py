@@ -1,5 +1,5 @@
+import sys
 import uasyncio as asyncio
-from picozero import pico_temp_sensor, pico_led
 from machine import Pin, Timer, PWM
 from dual_led import DualLED
 from helpers import get_wifi_status
@@ -42,7 +42,7 @@ class Claymore:
         self.timer = None
         self.servo_position = None
         self.set_trigger_position(ServoReady)
-        asyncio.run(self.test())
+        asyncio.create_task(self.test())
 
     async def test(self):
         self.armed_led.alternate_colors()
@@ -79,12 +79,8 @@ class Claymore:
             mode=Timer.ONE_SHOT, period=int(self.TRIGGER_RESET), callback=__reset_trigger)
 
     async def status(self):
-        temp = pico_temp_sensor.temp
         status = get_wifi_status()
         status.update({
-            'temperatureC': float(f"{temp:.1f}"),
-            'temperatureF': float(f"{(temp*9/5)+32:.1f}"),
-            'onboard_led': self.LED[pico_led.value],
             'door': self.DOOR[self.door.value()],  # 0->CLOSED, 1->OPEN
             'team': self.TEAM[self.team.value()],
             'team_color': self.team_color,
@@ -96,9 +92,8 @@ class Claymore:
         print(status)
         return status
 
-    async def add_server(self, loop, interval=3000):
-        loop.create_task(self.run_hardware_status(interval))
 
+if __name__ == '__main__':
     async def run_hardware_status(self, interval=3000):
         while True:  # Poll hardware and update LEDs
             try:
@@ -115,3 +110,7 @@ class Claymore:
             except Exception as e:
                 sys.print_exception(e)
                 await asyncio.sleep_ms(interval)
+
+    hw = Claymore()
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_hardware_status(hw, 3000))

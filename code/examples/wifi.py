@@ -2,11 +2,7 @@ import socket
 import network
 from time import sleep
 from picozero import pico_temp_sensor, pico_led
-
-
-
-ssid = 'spongeNET'
-password = 'RodShawnyaRileyWalkerSlattery'
+from credentials import ssid, password
 
 
 def connect():

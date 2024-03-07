@@ -3,9 +3,8 @@ import socket
 from time import sleep
 from picozero import pico_temp_sensor, pico_led
 import machine
+from credentials import ssid, password
 
-ssid = 'spongeNET'
-password = 'RodShawnyaRileyWalkerSlattery'
 ServoPin = 22
 ServoMax = 8400
 ServoMin = 1400
