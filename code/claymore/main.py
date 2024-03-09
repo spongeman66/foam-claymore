@@ -5,16 +5,17 @@ Main program for CLAYMORE
 """
 import errno
 import machine
-import sys
+from sys import print_exception
 from tinyweb import webserver
 import network
 import uasyncio as asyncio
 import aiohttp
 from helpers import (
     PropertiesFromFiles, wifi_start_access_point, wifi_connect_to_access_point, _handle_exception, mac_to_hostname,
-    Database, scan_wifi, get_mac, get_wifi_status)
+    Database, scan_wifi, get_mac)
 # from captive_portal import CaptivePortal
 from claymore_hardware import Claymore
+import gc
 
 
 # WLAN_MODE = network.AP_IF  # network.STA_IF
@@ -31,7 +32,7 @@ db_file = f'db_{hostname}.txt'
 # what is our magic button sequence?
 
 db = Database(db_file)
-db.setdefault('claymore', {}).update({'mac': get_mac(), 'hostname': hostname})
+db.setdefault('claymore', {}).update({'mac': get_mac()})  # , 'hostname': hostname})
 team = db['claymore'].setdefault('team', hw.team_color)
 if team != hw.team_color:
     # we may have accidentally toggled the team switch, and rebooted
@@ -62,14 +63,12 @@ for ap in available_wifi:
         password = ap['ssid'][:-3]
     try:
         ip, clacker_ip = wifi_connect_to_access_point(ssid=ap['ssid'], password=password, security=ap['security'])
-        db['claymore'].update({'ip': ip, 'url': f'http://{ip}'})
+        db['claymore'].update({'ip': ip})  # , 'url': f'http://{ip}'})
         db.setdefault('clacker', {}).update({'ssid': ap['ssid'], 'password': password, 'security': ap['security']})
-        db['clacker'].update({
-            'ip': clacker_ip,
-            'url': f"http://{clacker_ip}"})
+        db['clacker'].update({'ip': clacker_ip, 'url': f"http://{clacker_ip}"})
         break
     except Exception as e:
-        sys.print_exception(e)
+        print_exception(e)
 db.flush()
 
 print(f"pico w IP: http://{ip}:80")
@@ -84,7 +83,7 @@ url_base = db['clacker']['url']
 
 # Index page
 @app.route('/')
-async def fire(_request, response):
+async def index(_request, response):
     # Start HTTP response with content-type text/html
     await response.start_html()
     try:
@@ -94,38 +93,99 @@ async def fire(_request, response):
         # Send actual HTML page
         await response.send(html)
     except Exception as e:
-        sys.print_exception(e)
+        print_exception(e)
+        return str(e), 500
 
 
 @app.route('/fire')
-async def redirect(_request, response):
+async def fire_get(_request, response):
     try:
         # Start HTTP response with content-type text/html
         hw.fire_trigger()
         await response.redirect('/')
     except Exception as e:
-        sys.print_exception(e)
+        print_exception(e)
+        return str(e), 500
+
+
+@app.route('/status')
+async def status(_request, response):
+    await response.start_html()
+    try:
+        # Start HTTP response with content-type text/html
+        status = hw.status()
+        state = status['door']
+        print(state)
+        # Send actual HTML page
+        await response.send(state)
+    except Exception as e:
+        print_exception(e)
+        return str(e), 500
+
+
+@app.route('/ping')
+async def ping(_request, response):
+    await response.start_html()
+    try:
+        gc.collect()
+        print('ping from:', response.writer.get_extra_info('peername'))
+        await response.send('pong')
+    except Exception as e:
+        print_exception(e)
+        await response.send(str(e)), 500
+
+
+class Clack:
+    async def get(self, data):
+        print(f'/clack GET {data}')
+        try:
+            status = await hw.status()
+            data.update(status)  #  = {'door': status['door']}
+            print(data)
+            # print(f'Returning:\n{json.dumps(status)}')
+            return data
+        except Exception as e:
+            print_exception(e)
+            return str(e), 500
+
+    def post(self, data):
+        print(f'/clack POST {data}')
+        try:
+            hw.fire_trigger()
+            return 'FIRE'
+        except Exception as e:
+            print_exception(e)
+            return str(e), 500
+
 
 async def ping_forever(interval=5):
     url = f"{url_base}/ping"
     while True:
         await asyncio.sleep(interval)
         try:
-            print('wlanstatus=', get_wifi_status()['wlanstatus'])
+            print('wlanstatus =', network.WLAN().status())
         except Exception as e:
-            sys.print_exception(e)
+            print_exception(e)
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
-                    print(await resp.text(), resp.status)
+                    gc.collect()
+                    pong = await resp.text()
+                    print(pong, resp.status)
+                    if pong.lower() == 'pong':
+                        if not hw.timer:  # we may be doing something else...
+                            hw.signal_led.on()
         except OSError as e:
-            print(f'OSError during Ping: {e.errno=} {e.value}')
-            sys.print_exception(e)
+            print(f'OSError during Ping: {e.errno=} {e.value=}')
+            hw.signal_led.blink()
+            print_exception(e)
             if e.errno == errno.ENOMEM:
+                print('OOM')
                 machine.reset()
         except Exception as e:
              print('EXCEPTION during Ping')
-             sys.print_exception(e)
+             hw.signal_led.alternate_colors()
+             print_exception(e)
 
 
 async def run():
@@ -147,11 +207,12 @@ async def run():
 
     async with aiohttp.ClientSession() as session:
         url = f"{url_base}/register/{mac}"
-        print(url)
+        print(f'GET {url}')
         async with session.get(url) as resp:
+            print(dir(resp))
             print(resp.status)
             if resp.status == 200:
-                print(await resp.json())
+                data = await resp.json()
             else:
                 print(await resp.text())
 
@@ -161,7 +222,10 @@ async def run():
         async with session.post(url, json=db['claymore']) as resp:
             print(resp.status)
             if resp.status == 200:
-                print(await resp.json())
+                data = await resp.json()
+                print(f'POST updating with {data}')
+                db['claymore'].update(data)
+                db.flush()
             else:
                 print(await resp.text())
 
@@ -171,7 +235,10 @@ async def run():
         async with session.put(url, json=db['claymore']) as resp:
             print(resp.status)
             if resp.status == 200:
-                print(await resp.json())
+                data = await resp.json()
+                print(f'PUT updating with {data}')
+                db['claymore'].update(data)
+                db.flush()
             else:
                 print(await resp.text())
 
@@ -181,9 +248,18 @@ async def run():
         async with session.get(url) as resp:
             print(resp.status)
             if resp.status == 200:
-                print(await resp.json())
+                data = await resp.json()
+                db['claymore'].update(data)
+                db.flush()
+                if data.get('id') is not None:
+                    hw.armed_led.count_number(data['id'] + 1)
+                print(f"GET final config: {db['claymore']}")
             else:
                 print(await resp.text())
+
+    hw.armed_led.count_number(db['claymore']['id'] + 1)
+
+    app.add_resource(Clack, '/clack')
 
     app.run(host='0.0.0.0', port=80, loop_forever=False)
 

@@ -1,8 +1,8 @@
-import sys
-import uasyncio as asyncio
+from sys import print_exception
+from uasyncio import get_event_loop, sleep_ms, create_task
 from machine import Pin, Timer, PWM
 from dual_led import DualLED
-from helpers import get_wifi_status
+# from helpers import get_wifi_status
 from hardware import *
 from primitives import Pushbutton
 
@@ -65,20 +65,21 @@ class Clacker:
         self.buttons = [self.btn1, self.btn2, self.btn3, self.btn4]
         self.pushbuttons = [self.pb1, self.pb2, self.pb3, self.pb4]
         self.leds = [self.led1, self.led2, self.led3, self.led4]
-        asyncio.create_task(self.test())
+        create_task(self.test())
         
     async def test(self):
         self.status.alternate_colors()
         for led in self.leds:
             led.alternate_colors()
-        await asyncio.sleep(1)
+        await sleep_ms(1000)
         self.status.on()
         for led in self.leds:
             led.on()
-        await asyncio.sleep(1)
+        await sleep_ms(1000)
         self.status.off()
         for led in self.leds:
             led.off()
+        self.status.on()
 
     def other_team(self):
         ot = list(self.TEAMS)
@@ -88,8 +89,8 @@ class Clacker:
     # async def status(self):
     def hw_status(self):
         # this should all be 'fast' everything is HW/in memory
-        status = get_wifi_status()
-        status.update({
+        # status = get_wifi_status()
+        status = {
             'fire': self.SWITCH[self.fire.value()],   # 0->PRESSED, 1->OFF
             'sw_ab': self.TEAMS[self.sw_ab.value()],  # 0->PRESSED, 1->OFF
             'team_color': self.team_color,
@@ -102,16 +103,17 @@ class Clacker:
             'led_2': self.led2.get_state(),
             'led_3': self.led3.get_state(),
             'led_4': self.led4.get_state()
-        })
+        }
         return status
+
 
 if __name__ == '__main__':
 
     async def run_hardware_status(hw, interval=3000):
         while True:  # Poll hardware and update LEDs
             try:
-                await asyncio.sleep_ms(interval)
-                status = hw.hw_status()
+                await sleep_ms(interval)
+                # status = hw.hw_status()
                 hw.team_color = DualLED.COLORS[hw.sw_ab.value()]
                 hw.status.set_primary_color(hw.team_color)
                 for led in hw.leds:
@@ -119,10 +121,10 @@ if __name__ == '__main__':
                     led.toggle()
 
             except Exception as e:
-                sys.print_exception(e)
-                await asyncio.sleep_ms(interval)
+                print_exception(e)
+                await sleep_ms(interval)
 
     hw = Clacker()
-    loop = asyncio.get_event_loop()
+    loop = get_event_loop()
     loop.create_task(run_hardware_status(hw, 3000))
     

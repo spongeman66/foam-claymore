@@ -78,7 +78,7 @@ def ap_mode(ssid, password=None):
     else:
         ap.config(essid=ssid, password=password)
         print(f'AP Mode Is Active, You can Now Connect {ssid}, "{password}"')
-    network.hostname(ssid)  # set our hosname to the same as the AP to make it easy to find the web page
+    network.hostname(ssid)  # set our hostname to the same as the AP to make it easy to find the web page
     print(f"hostname={network.hostname()}")
     ap.active(True)
 

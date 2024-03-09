@@ -2,7 +2,6 @@ import sys
 import uasyncio as asyncio
 from machine import Pin, Timer, PWM
 from dual_led import DualLED
-from helpers import get_wifi_status
 from hardware import *
 # # Output pins
 # SIGNAL_RED_GPIO = 13  # Output, Normally Low: RED   Signal LED 0 == Off, 1 == On
@@ -62,12 +61,16 @@ class Claymore:
 
     def fire_trigger(self):
         print("fire_trigger")
+        signal_state = self.signal_led.state
+        armed_state = self.armed_led.state
 
         def __reset_trigger(_t):
             print("__reset_trigger callback")
             self.set_trigger_position(ServoReady)
-            self.signal_led.off()
-            self.armed_led.off()
+            self.signal_led.restore_state(state=signal_state)
+            self.armed_led.restore_state(state=armed_state)
+            if self.timer:
+                self.timer = None
 
         self.set_trigger_position(ServoFire)
         self.signal_led.alternate_colors()
@@ -78,9 +81,9 @@ class Claymore:
         self.timer.init(
             mode=Timer.ONE_SHOT, period=int(self.TRIGGER_RESET), callback=__reset_trigger)
 
-    async def status(self):
-        status = get_wifi_status()
-        status.update({
+    def status(self):
+        # status = get_wifi_status()
+        status = {
             'door': self.DOOR[self.door.value()],  # 0->CLOSED, 1->OPEN
             'team': self.TEAM[self.team.value()],
             'team_color': self.team_color,
@@ -88,7 +91,7 @@ class Claymore:
             'armed': self.armed_led.get_state(),
             'signal': self.signal_led.get_state(),
             'trigger': "READY" if self.servo_position == ServoReady else "FIRING"
-        })
+        }
         print(status)
         return status
 
