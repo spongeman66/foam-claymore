@@ -277,10 +277,11 @@ class Register:
 
     def get(self, data, mac):
         """Get detailed information about given claymore's mac"""
+        print(f'GET /register/{mac} GET {data}')
         found_i, claymore = self._find_slot_in_db(mac)
         if not claymore:
             return self.not_exists()
-        print(f'/register/{mac} GET {data} -> {claymore}')
+        print('Returning:', claymore)
         return claymore
 
     def post(self, data, mac):

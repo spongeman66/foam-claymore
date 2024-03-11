@@ -11,6 +11,24 @@ SERVER_SSID = 'PicoW'  # max 32 characters
 SERVER_SUBNET = '255.255.255.0'
 WLAN_MODE = network.AP_IF  # network.STA_IF
 PM_MAP = dict()
+
+WLAN_STATUS = {
+    0: 'LINK_DOWN',
+    1: 'LINK_JOIN',
+    2: 'LINK_NOIP',
+    3: 'LINK_UP',
+    -1: 'LINK_FAIL',
+    -2: 'LINK_NONET',
+    -3: 'LINK_BADAUTH'
+}
+#define CYW43_LINK_DOWN (0)
+#define CYW43_LINK_JOIN (1)
+#define CYW43_LINK_NOIP (2)
+#define CYW43_LINK_UP (3)
+#define CYW43_LINK_FAIL (-1)
+#define CYW43_LINK_NONET (-2)
+#define CYW43_LINK_BADAUTH (-3)
+
 enable()  # gc
 
 

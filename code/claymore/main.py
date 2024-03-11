@@ -12,7 +12,7 @@ import uasyncio as asyncio
 import aiohttp
 from helpers import (
     PropertiesFromFiles, wifi_start_access_point, wifi_connect_to_access_point, _handle_exception, mac_to_hostname,
-    Database, scan_wifi, get_mac)
+    Database, scan_wifi, get_mac, WLAN_STATUS)
 # from captive_portal import CaptivePortal
 from claymore_hardware import Claymore
 import gc
@@ -158,23 +158,46 @@ class Clack:
             return str(e), 500
 
 
+def rescan_wifi(ssid):
+    available_wifi, _ = scan_wifi([ssid])
+    print(f'\nRescan APs found:\n{available_wifi}')
+    return available_wifi
+
+
 async def ping_forever(interval=5):
     url = f"{url_base}/ping"
     while True:
         await asyncio.sleep(interval)
         try:
-            print('wlanstatus =', network.WLAN().status())
+            wlan_status = network.WLAN().status()
+            if wlan_status != 3:  # LINK_UP
+                print('wlanstatus =', WLAN_STATUS.get(wlan_status, f'UNKNOWN{wlan_status}'))
+                avail = rescan_wifi(db['clacker']['ssid'])
+                if avail:
+                    # try reconnect (This does not play well with asyncio)
+                    ck = db['clacker']
+                    ip, clacker_ip = wifi_connect_to_access_point(
+                        ssid=ck['ssid'], password=ck['password'], security=ck['security'])
+                    db['claymore'].update({'ip': ip})  # , 'url': f'http://{ip}'})
+                    db['clacker'].update({'ip': clacker_ip, 'url': f"http://{clacker_ip}"})
+                    db.flush()
+                    new_id = await get_registered(db)
+
         except Exception as e:
             print_exception(e)
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    gc.collect()
-                    pong = await resp.text()
-                    print(pong, resp.status)
-                    if pong.lower() == 'pong':
-                        if not hw.timer:  # we may be doing something else...
-                            hw.signal_led.on()
+            pong, _ = await send_ping(url)
+            print(pong)
+            if pong.lower() == 'pong':
+                if not hw.timer:  # we may be doing something else...
+                    hw.signal_led.on()
+                    if not hw.armed_led.state.startswith('COUNT'):
+                        hw.armed_led.count_number(db['claymore']['id'] + 1)
+        except asyncio.TimeoutError as e:
+            # ping has timed out... We must be losing wifi connection
+            print('TimeoutError during Ping:')
+            hw.signal_led.blink()
+            print_exception(e)
         except OSError as e:
             print(f'OSError during Ping: {e.errno=} {e.value=}')
             hw.signal_led.blink()
@@ -188,79 +211,63 @@ async def ping_forever(interval=5):
              print_exception(e)
 
 
+async def send_ping(url):
+    # ping with a shorter timeout if the wifi has dropped
+    async with aiohttp.ClientSession() as session:
+        # async with asyncio.wait_for(fut, timeout=5) as resp:
+        # add a timeout in case our wifi connection has gone bad
+        # try:
+        ses = session.get(url)
+        resp = await asyncio.wait_for(ses.__aenter__(), timeout=10)
+        pong = await resp.text()
+        await ses.__aexit__(None, None, None)
+        return pong, resp.status
+
+        # let the timeout exception bubble up so it can be handled
+        # except asyncio.TimeoutError as e:
+        #     print_exception(e)
+
+
+
+async def send_rest(verb, url, **kwargs):
+    async with aiohttp.ClientSession() as session:
+        async with session.request(verb, url, **kwargs) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data, resp.status
+            data = await resp.text()
+            return data, resp.status
+
+
+async def get_registered(db):
+    url = f"{db['clacker']['url']}/register/{db['claymore']['mac']}"
+    for averb in ['GET', 'POST', 'PUT', 'GET']:
+        if averb == 'GET':
+            data, resp_status = await send_rest(averb, url)
+        else:
+            data, resp_status = await send_rest(averb, url, json=db['claymore'])
+        print(f'{averb} {url} -> {resp_status}:{data}')
+        if resp_status == 200:
+            if 'id' in data:
+                db['claymore'].update(data)
+                db.flush()
+                return data['id']
+        else:
+            print(data)
+
+
 async def run():
     # ping-pong our clacker
     db.setdefault('clacker', {}).update({'ssid': ap['ssid'], 'password': password, 'security': ap['security']})
-    db['clacker'].update({
-        'ip': clacker_ip,
-        'url': f"http://{clacker_ip}"})
+    db['clacker'].update({'ip': clacker_ip, 'url': f"http://{clacker_ip}"})
     db.flush()
-    # mac = db['claymore']['mac']
-    # url_base = db['clacker']['url']
+    url_base = db['clacker']['url']
 
-    async with aiohttp.ClientSession() as session:
-        url = f"{url_base}/ping"
-        print(url)
-        async with session.get(url) as resp:
-            print(resp.status)
-            print(await resp.text())
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{url_base}/register/{mac}"
-        print(f'GET {url}')
-        async with session.get(url) as resp:
-            print(dir(resp))
-            print(resp.status)
-            if resp.status == 200:
-                data = await resp.json()
-            else:
-                print(await resp.text())
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{url_base}/register/{mac}"
-        print(f'POST {url} {db["claymore"]}')
-        async with session.post(url, json=db['claymore']) as resp:
-            print(resp.status)
-            if resp.status == 200:
-                data = await resp.json()
-                print(f'POST updating with {data}')
-                db['claymore'].update(data)
-                db.flush()
-            else:
-                print(await resp.text())
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{url_base}/register/{mac}"
-        print(f'PUT {url} {db["claymore"]}')
-        async with session.put(url, json=db['claymore']) as resp:
-            print(resp.status)
-            if resp.status == 200:
-                data = await resp.json()
-                print(f'PUT updating with {data}')
-                db['claymore'].update(data)
-                db.flush()
-            else:
-                print(await resp.text())
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{url_base}/register/{mac}"
-        print(url)
-        async with session.get(url) as resp:
-            print(resp.status)
-            if resp.status == 200:
-                data = await resp.json()
-                db['claymore'].update(data)
-                db.flush()
-                if data.get('id') is not None:
-                    hw.armed_led.count_number(data['id'] + 1)
-                print(f"GET final config: {db['claymore']}")
-            else:
-                print(await resp.text())
-
-    hw.armed_led.count_number(db['claymore']['id'] + 1)
-
+    print(await send_ping(f"{url_base}/ping"))
+    claymore_id = await get_registered(db)
+    assert claymore_id == db['claymore']['id']
+    print(f"Setting Armed ID: {claymore_id + 1}")
     app.add_resource(Clack, '/clack')
-
     app.run(host='0.0.0.0', port=80, loop_forever=False)
 
     loop = asyncio.get_event_loop()
@@ -269,6 +276,7 @@ async def run():
         await captive.add_server(loop)
     loop.create_task(ping_forever())
     print('Looping forever...')
+    hw.armed_led.count_number(claymore_id + 1)
     loop.run_forever()
 
 if __name__ == '__main__':
