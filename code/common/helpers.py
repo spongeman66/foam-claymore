@@ -108,7 +108,7 @@ class Database(dict):
 
 def wifi_start_access_point(ssid=None, password=None, hostname=None):
     """ set up the access point """
-    _, best_channel = scan_wifi()
+    best_channel = get_best_channel(scan_wifi())
     ap = network.WLAN(network.AP_IF)
 
     ap.active(False)
@@ -123,7 +123,7 @@ def wifi_start_access_point(ssid=None, password=None, hostname=None):
         password = 'no password'
     else:
         ap.config(password=password)
-        ap.config(security=3)
+        # ap.config(security=5)
 
     ap.active(True)
     while not ap.active():
@@ -138,7 +138,7 @@ def wifi_start_access_point(ssid=None, password=None, hostname=None):
     return ip
 
 
-def wifi_connect_to_access_point(ssid, password=None, security=0):
+def wifi_connect_to_access_point(ssid, password=None, timeout=10):
     """
     Parameters:
     ssid[str]: The name of the ap you want to connect
@@ -154,12 +154,13 @@ def wifi_connect_to_access_point(ssid, password=None, security=0):
         wifi.config(security=0)
         password = None
     else:
-        wifi.config(security=security)
         wifi.config(password=password)
     wifi.active(True)
 
     wifi.connect(ssid, password)
-    while not wifi.isconnected():
+    for _ in range(timeout):
+        if wifi.isconnected():
+            break
         print('Waiting for connection...')
         sleep(1)
     ip = wifi.ifconfig()
@@ -213,11 +214,10 @@ def scan_wifi(match=None):
             'hidden': hidden
         })
         print(ap_list[-1])
-    clearest_channel = get_best_channel(ap_list)
     if match:
-        return [ap for ap in ap_list if all(m.lower() in ap['ssid'].lower() for m in match)], clearest_channel
+        return [ap for ap in ap_list if all(m.lower() in ap['ssid'].lower() for m in match)]
 
-    return ap_list, clearest_channel
+    return ap_list
 
 
 def _handle_exception(_loop, context):

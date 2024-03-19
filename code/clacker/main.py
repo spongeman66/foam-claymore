@@ -24,6 +24,9 @@ _HOST_BASE_NAME = const('clacker')
 _HOSTNAME = mac_to_hostname(_HOST_BASE_NAME)
 _DB_FILE = f'db_{_HOSTNAME}.txt'
 _HTML_PATH = const("./html")
+_LED_STATUS_OFF = const(3500)  # ms
+_LED_CLACK_OFF = const(4500)  # ms
+
 
 HTML = PropertiesFromFiles(_HTML_PATH)  # JIT read html static pages into memory
 hw = Clacker()  # represents the Hardware in the Claymore
@@ -43,7 +46,10 @@ db.setdefault('claymores', [{}] * hw.MAX_CLAYMORES)
 team = db['clacker'].setdefault('team', hw.team_color)
 
 ssid = mac_to_hostname(f'{_HOST_BASE_NAME}_{team}')
-ip = wifi_start_access_point(ssid=ssid, hostname=_HOSTNAME)  # turn on our WIFI in AP Mode
+# password = ssid[:-3]  # secure AP takes too long and WDT kicks to reboot
+password = None
+
+ip = wifi_start_access_point(ssid=ssid, hostname=_HOSTNAME, password=password)  # turn on our WIFI in AP Mode
 
 if team != hw.team_color:
     # we may have accidentally toggled the team switch, and rebooted
@@ -81,7 +87,7 @@ async def check_one(claymore_ip, position):
             if timers[position]:
                 timers[position].deinit()
             timers[position] = Timer()
-            timers[position].init(mode=Timer.ONE_SHOT, period=5000, callback=partial(led_off, position))
+            timers[position].init(mode=Timer.ONE_SHOT, period=_LED_CLACK_OFF, callback=partial(led_off, position))
             return
 
         async with aiohttp.ClientSession() as session:
@@ -98,7 +104,7 @@ async def check_one(claymore_ip, position):
                     if timers[position]:
                         timers[position].deinit()
                     timers[position] = Timer()
-                    timers[position].init(mode=Timer.ONE_SHOT, period=3500, callback=partial(led_off, position))
+                    timers[position].init(mode=Timer.ONE_SHOT, period=_LED_STATUS_OFF, callback=partial(led_off, position))
                 else:
                     print(resp.status)
     except Exception as e:
@@ -164,6 +170,7 @@ async def ping_one(position, led_callback):
         if timers[position]:
             timers[position].deinit()
             timers[position] = None
+        gc.collect()
         async with aiohttp.ClientSession() as session:
             url = f"http://{claymore_ip}/ping"
             print(url)
@@ -185,9 +192,11 @@ async def single_press(position):
     print(f'single_press {position}')
     try:
         gc.collect()
+        ip = db['claymores'][position].get('ip')
+        if not ip:
+            return
         loop = get_event_loop()
-        loop.create_task(check_one(db['claymores'][position]['ip'], position))
-        #loop.create_task(ping_one(position, hw.leds[position].toggle))
+        loop.create_task(check_one(ip, position))
         await sleep_ms(5)  # let our ping_one task start
     except Exception as e:
         hw.leds[position].off()
@@ -244,7 +253,7 @@ async def index(_request, response):
 async def ping(_request, response):
     await response.start_html()
     try:
-        print('ping from:', response.writer.get_extra_info('peername'))
+        # print('ping from:', response.writer.get_extra_info('peername'))
         await response.send('pong')
     except Exception as e:
         print_exception(e)
@@ -256,7 +265,6 @@ class Register:
     def _update_from_db(self, data, id):
         data.update({
             'id': id,
-            'clacker_mac': db['clacker']['mac'],
             'team': db['clacker']['team']})
 
     def _find_slot_in_db(self, mac):

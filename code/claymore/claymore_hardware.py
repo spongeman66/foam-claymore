@@ -1,7 +1,8 @@
 import sys
 import uasyncio as asyncio
-from machine import Pin, Timer, PWM
+from machine import Pin, Timer, PWM, WDT
 from dual_led import DualLED
+from primitives import Pushbutton
 from hardware import *
 # # Output pins
 # SIGNAL_RED_GPIO = 13  # Output, Normally Low: RED   Signal LED 0 == Off, 1 == On
@@ -22,14 +23,46 @@ from hardware import *
 # SERVO_GPIO = 22        # PWM to control trigger servo
 
 
+class MultiPushbutton(Pushbutton):
+    def __init__(self, pin, suppress=False, sense=None):
+        self._multipend = False  # Multiclick waiting for more_clicks
+        self._multiran = False  # Multiclick executed user function
+        self._mf = False
+        self._ma = ()
+        self._md = False  # Delay_ms instance for multiclick
+        super().__init__(pin, suppress, sense)
+
+    def multi_click_func(self, click_count=3, func=False, args=()):
+        self._mcc = click_count
+        # for now, we just call setup double_click for testing
+        self.double_func(func=func, args=args)
+
+        # if func is None:
+        #     self.double = asyncio.Event()
+        #     func = self.double.set
+        # self._df = func
+        # self._da = args
+        # if func:  # If double timer already in place, leave it
+        #     if not self._dd:
+        #         self._dd = Delay_ms(self._ddto)
+        # else:
+        #     self._dd = False  # Clearing down double func
+
+
 class Claymore:
     TRIGGER_RESET = 3500  # Trigger automatically resets after # milliseconds
     DOOR = ['CLOSED', 'OPEN']
     TEAM = DualLED.COLORS
     LED = ['OFF', 'ON']
+    NOT_PRESSED = 1
 
     def __init__(self):
         self.door = Pin(DOOR_GPIO, Pin.IN, Pin.PULL_UP)
+        self.pb_door = None
+        if self.door.value() == 1:
+            # this is only valid IF the door is open on reboot
+            self.pb_door = MultiPushbutton(self.door, suppress=True, sense=self.NOT_PRESSED)
+
         self.team = Pin(AB_GPIO, Pin.IN, Pin.PULL_UP)
         self.ap_mode = Pin(STANDALONE_GPIO, Pin.IN, Pin.PULL_UP)
         self.team_color = DualLED.COLORS[self.team.value()]
@@ -60,7 +93,8 @@ class Claymore:
         self.trigger.duty_u16(position)
 
     def fire_trigger(self):
-        print("fire_trigger")
+        if self.timer:
+            self.timer.deinit()
         signal_state = self.signal_led.state
         armed_state = self.armed_led.state
 
@@ -70,13 +104,12 @@ class Claymore:
             self.signal_led.restore_state(state=signal_state)
             self.armed_led.restore_state(state=armed_state)
             if self.timer:
+                del self.timer
                 self.timer = None
 
         self.set_trigger_position(ServoFire)
         self.signal_led.alternate_colors()
         self.armed_led.alternate_colors()
-        if self.timer:
-            self.timer.deinit()
         self.timer = Timer()
         self.timer.init(
             mode=Timer.ONE_SHOT, period=int(self.TRIGGER_RESET), callback=__reset_trigger)
@@ -92,7 +125,6 @@ class Claymore:
             'signal': self.signal_led.get_state(),
             'trigger': "READY" if self.servo_position == ServoReady else "FIRING"
         }
-        print(status)
         return status
 
 

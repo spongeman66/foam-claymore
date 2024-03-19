@@ -4,24 +4,35 @@
 Main program for CLAYMORE
 """
 import errno
-import machine
-from sys import print_exception
-from tinyweb import webserver
 import network
 import uasyncio as asyncio
-import aiohttp
+from os import remove
+from machine import (reset, WDT, reset_cause, PWRON_RESET, WDT_RESET)
+from micropython import const
+from time import sleep
+from sys import print_exception
+from tinyweb import webserver
+from aiohttp import ClientSession
 from helpers import (
-    PropertiesFromFiles, wifi_start_access_point, wifi_connect_to_access_point, _handle_exception, mac_to_hostname,
-    Database, scan_wifi, get_mac, WLAN_STATUS)
+    PropertiesFromFiles, wifi_start_access_point, wifi_connect_to_access_point,
+    _handle_exception, mac_to_hostname, Database, scan_wifi, get_mac, WLAN_STATUS)
 # from captive_portal import CaptivePortal
 from claymore_hardware import Claymore
-import gc
+from gc import collect
 
 
 # WLAN_MODE = network.AP_IF  # network.STA_IF
-HOST_BASE_NAME = 'claymore'
-HTML_PATH = "./html"
+HOST_BASE_NAME = const('claymore')
+HTML_PATH = const("./html")
+WDT_TIMEOUT = const(8000)
+IP_TIMEOUT = const(6000)  # Must be less than WDT
 
+RESET_CAUSES = {
+    PWRON_RESET: 'PWRON_RESET',
+    WDT_RESET: 'WDT_RESET'
+}
+
+MY_WDT = None
 HTML = PropertiesFromFiles(HTML_PATH)  # JIT read html static pages into memory
 hw = Claymore()  # represents the Hardware in the Claymore
 app = webserver()  # Create web server application
@@ -30,6 +41,8 @@ hostname = mac_to_hostname(base=HOST_BASE_NAME)
 db_file = f'db_{hostname}.txt'
 
 # what is our magic button sequence?
+# for now power on with the door open.
+# Then double-click the door button
 
 db = Database(db_file)
 db.setdefault('claymore', {}).update({'mac': get_mac()})  # , 'hostname': hostname})
@@ -40,31 +53,51 @@ if team != hw.team_color:
     hw.signal_led.set_primary_color(team)
     hw.team_color = team
 
-# scan for wifi clacker
-available_wifi, _ = scan_wifi(['clacker', team])
-print(f'\n\n{team} Select from:')
-if db.get('clacker', {}).get('ssid'):
-    target_ssid = db['clacker']['ssid']
-    found_clacker = ([
-        ap for ap in available_wifi
-        if ap.get('ssid').lower() == target_ssid.lower()] or [None])[0]
-    if not found_clacker:
-        print(f"Our old clacker: {target_ssid} is not in the current list!")
-        db.pop('clacker', None)
-    else:
-        # we found OUR clacker in the list! Make sure it is the ONLY one!
-        available_wifi = [found_clacker]
+if hw.pb_door:
+    def reset_db():
+        print('RESET-Deleting DB')
+        remove(db_file)
+        reset()
 
+    hw.pb_door.multi_click_func(5, reset_db, tuple())
+
+
+print(f"Reset Cause: {reset_cause()} {RESET_CAUSES[reset_cause()]}")
+if reset_cause() in [PWRON_RESET]:
+    print("Normal Reset Cause.")
+elif reset_cause() in [WDT_RESET]:
+    print("REBOOT DUE TO WATCH DOG TIMER.")
+else:
+    print("UNKNOWN RESET CAUSE")
+
+# scan for wifi clacker
+available_wifi = []
+while not available_wifi:
+    if db.get('clacker', {}).get('ssid'):
+        # is old clacker available?
+        available_wifi = scan_wifi([db['clacker']['ssid']])
+        if not available_wifi:
+            print(f"Our old clacker: {db['clacker']['ssid']} is not in the current list!")
+            #  db.pop('clacker', None)  # Do we really want to do this?
+            # must match both 'clacker' and team color
+            available_wifi = scan_wifi(['clacker', team])
+    else:
+        available_wifi = scan_wifi(['clacker', team])
+    if not available_wifi:
+        print(f"No suitable APs available for {db['clacker']['ssid']} or team {team}")
+        sleep(3)
+
+# we got one. Try to connect.
 for ap in available_wifi:
     print(ap)
     password = None
     if ap['security'] != 0:
-        # convention is the password is the ssid - the 2 characters at the end
+        # convention is the password = the ssid - the 2 characters at the end
         password = ap['ssid'][:-3]
     try:
-        ip, clacker_ip = wifi_connect_to_access_point(ssid=ap['ssid'], password=password, security=ap['security'])
+        ip, clacker_ip = wifi_connect_to_access_point(ssid=ap['ssid'], password=password)
         db['claymore'].update({'ip': ip})  # , 'url': f'http://{ip}'})
-        db.setdefault('clacker', {}).update({'ssid': ap['ssid'], 'password': password, 'security': ap['security']})
+        db.setdefault('clacker', {}).update({'ssid': ap['ssid'], 'password': password})
         db['clacker'].update({'ip': clacker_ip, 'url': f"http://{clacker_ip}"})
         break
     except Exception as e:
@@ -77,8 +110,13 @@ print(f"pico w IP: http://{network.hostname()}:80")
 # Only need this if we decide to be an AP!
 # captive = CaptivePortal(ip)
 captive = None
-mac = db['claymore']['mac']
 url_base = db['clacker']['url']
+
+
+def rescan_wifi(ssid):
+    available_wifi = scan_wifi([ssid])
+    print(f'\nRescan APs found:\n{available_wifi}')
+    return available_wifi
 
 
 # Index page
@@ -127,8 +165,8 @@ async def status(_request, response):
 async def ping(_request, response):
     await response.start_html()
     try:
-        gc.collect()
-        print('ping from:', response.writer.get_extra_info('peername'))
+        collect()  # the garbage
+        # print('ping from:', response.writer.get_extra_info('peername'))
         await response.send('pong')
     except Exception as e:
         print_exception(e)
@@ -148,45 +186,52 @@ class Clack:
             print_exception(e)
             return str(e), 500
 
-    def post(self, data):
+    async def post(self, data):
         print(f'/clack POST {data}')
         try:
             hw.fire_trigger()
+            print("fire_trigger 5")
             return 'FIRE'
         except Exception as e:
             print_exception(e)
             return str(e), 500
 
 
-def rescan_wifi(ssid):
-    available_wifi, _ = scan_wifi([ssid])
-    print(f'\nRescan APs found:\n{available_wifi}')
-    return available_wifi
-
-
-async def ping_forever(interval=5):
-    url = f"{url_base}/ping"
+async def ping_forever(interval_ms=None):
+    interval_ms = interval_ms or IP_TIMEOUT
+    err_do_reconnect = True
     while True:
-        await asyncio.sleep(interval)
+        MY_WDT.feed()
+        collect()  # the garbage
+        MY_WDT.feed()
+        await asyncio.sleep_ms(int(interval_ms/2))
+        MY_WDT.feed()
+        await asyncio.sleep_ms(int(interval_ms/2))
+        MY_WDT.feed()
         try:
             wlan_status = network.WLAN().status()
-            if wlan_status != 3:  # LINK_UP
+            if (wlan_status != 3) or err_do_reconnect:  # NOT LINK_UP or failed in some other way
                 print('wlanstatus =', WLAN_STATUS.get(wlan_status, f'UNKNOWN{wlan_status}'))
+                MY_WDT.feed()
                 avail = rescan_wifi(db['clacker']['ssid'])
+                MY_WDT.feed()
                 if avail:
-                    # try reconnect (This does not play well with asyncio)
-                    ck = db['clacker']
+                    # try reconnect (This may not play well with asyncio)
                     ip, clacker_ip = wifi_connect_to_access_point(
-                        ssid=ck['ssid'], password=ck['password'], security=ck['security'])
+                        ssid=db['clacker']['ssid'], password=db['clacker']['password'])
+                    MY_WDT.feed()
                     db['claymore'].update({'ip': ip})  # , 'url': f'http://{ip}'})
                     db['clacker'].update({'ip': clacker_ip, 'url': f"http://{clacker_ip}"})
+                    db['claymore']['id'] = await get_registered(db)
                     db.flush()
-                    new_id = await get_registered(db)
+                    err_do_reconnect = False
 
         except Exception as e:
             print_exception(e)
+        MY_WDT.feed()
         try:
-            pong, _ = await send_ping(url)
+            pong, _ = await send_ping(f"{db['clacker']['url']}/ping")
+            MY_WDT.feed()
             print(pong)
             if pong.lower() == 'pong':
                 if not hw.timer:  # we may be doing something else...
@@ -195,62 +240,74 @@ async def ping_forever(interval=5):
                         hw.armed_led.count_number(db['claymore']['id'] + 1)
         except asyncio.TimeoutError as e:
             # ping has timed out... We must be losing wifi connection
+            MY_WDT.feed()
             print('TimeoutError during Ping:')
             hw.signal_led.blink()
             print_exception(e)
+            err_do_reconnect = True
         except OSError as e:
             print(f'OSError during Ping: {e.errno=} {e.value=}')
             hw.signal_led.blink()
             print_exception(e)
             if e.errno == errno.ENOMEM:
                 print('OOM')
-                machine.reset()
+                reset()
+            err_do_reconnect = True
+            MY_WDT.feed()
         except Exception as e:
-             print('EXCEPTION during Ping')
-             hw.signal_led.alternate_colors()
-             print_exception(e)
+            print('EXCEPTION during Ping')
+            MY_WDT.feed()
+            hw.signal_led.alternate_colors()
+            print_exception(e)
+            err_do_reconnect = True
 
 
 async def send_ping(url):
     # ping with a shorter timeout if the wifi has dropped
-    async with aiohttp.ClientSession() as session:
-        # async with asyncio.wait_for(fut, timeout=5) as resp:
+    async with ClientSession() as session:
         # add a timeout in case our wifi connection has gone bad
-        # try:
-        ses = session.get(url)
-        resp = await asyncio.wait_for(ses.__aenter__(), timeout=10)
-        pong = await resp.text()
-        await ses.__aexit__(None, None, None)
-        return pong, resp.status
-
         # let the timeout exception bubble up so it can be handled
-        # except asyncio.TimeoutError as e:
-        #     print_exception(e)
-
+        MY_WDT.feed()
+        ses = session.get(url)
+        resp = await asyncio.wait_for(ses.__aenter__(), timeout=IP_TIMEOUT)
+        MY_WDT.feed()
+        pong = await asyncio.wait_for(resp.text(), timeout=IP_TIMEOUT)
+        MY_WDT.feed()
+        await asyncio.wait_for(ses.__aexit__(None, None, None), timeout=IP_TIMEOUT)
+        MY_WDT.feed()
+        return pong, resp.status
 
 
 async def send_rest(verb, url, **kwargs):
-    async with aiohttp.ClientSession() as session:
-        async with session.request(verb, url, **kwargs) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data, resp.status
-            data = await resp.text()
-            return data, resp.status
+    MY_WDT.feed()
+    data = None
+    async with ClientSession() as session:
+        ses = session.request(verb, url, **kwargs)
+        resp = await asyncio.wait_for(ses.__aenter__(), timeout=IP_TIMEOUT)
+        MY_WDT.feed()
+        if resp.status == 200:
+            data = await asyncio.wait_for(resp.json(), timeout=IP_TIMEOUT)
+            MY_WDT.feed()
+        await asyncio.wait_for(ses.__aexit__(None, None, None), timeout=IP_TIMEOUT)
+        MY_WDT.feed()
+        return data, resp.status
 
 
 async def get_registered(db):
+    await send_ping(f"{db['clacker']['url']}/ping")  # may cause a timeout if no response
     url = f"{db['clacker']['url']}/register/{db['claymore']['mac']}"
-    for averb in ['GET', 'POST', 'PUT', 'GET']:
-        if averb == 'GET':
-            data, resp_status = await send_rest(averb, url)
+    print(f'Getting registered: {url}')
+    for verb in ['GET', 'POST', 'PUT', 'GET']:
+        if verb == 'GET':
+            data, resp_status = await send_rest(verb, url)
         else:
-            data, resp_status = await send_rest(averb, url, json=db['claymore'])
-        print(f'{averb} {url} -> {resp_status}:{data}')
+            data, resp_status = await send_rest(verb, url, json=db['claymore'])
+        print(f'{verb} {url} -> {resp_status}:{data}')
         if resp_status == 200:
             if 'id' in data:
                 db['claymore'].update(data)
                 db.flush()
+                MY_WDT.feed()
                 return data['id']
         else:
             print(data)
@@ -261,12 +318,7 @@ async def run():
     db.setdefault('clacker', {}).update({'ssid': ap['ssid'], 'password': password, 'security': ap['security']})
     db['clacker'].update({'ip': clacker_ip, 'url': f"http://{clacker_ip}"})
     db.flush()
-    url_base = db['clacker']['url']
 
-    print(await send_ping(f"{url_base}/ping"))
-    claymore_id = await get_registered(db)
-    assert claymore_id == db['claymore']['id']
-    print(f"Setting Armed ID: {claymore_id + 1}")
     app.add_resource(Clack, '/clack')
     app.run(host='0.0.0.0', port=80, loop_forever=False)
 
@@ -276,8 +328,9 @@ async def run():
         await captive.add_server(loop)
     loop.create_task(ping_forever())
     print('Looping forever...')
-    hw.armed_led.count_number(claymore_id + 1)
     loop.run_forever()
 
 if __name__ == '__main__':
+    print("Starting WDT")
+    MY_WDT = WDT(timeout=WDT_TIMEOUT)
     asyncio.run(run())
